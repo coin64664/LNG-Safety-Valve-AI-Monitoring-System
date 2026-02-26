@@ -1,8 +1,10 @@
+
 import os
 import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 
 import matplotlib as mpl
 from matplotlib import font_manager
@@ -93,7 +95,7 @@ st.set_page_config(page_title="LNG安全阀健康监测系统", layout="wide")
 st.sidebar.title("🔐 访问控制")
 user_password = st.sidebar.text_input("请输入密码", type="password")
 if user_password != APP_PASSWORD:
-    st.warning("请输入正确密码后进入系统。")
+    st.warning("请输入正确密码后进入系统 当前版本v0.2 开发：YXY。")
     st.stop()
 
 
@@ -135,7 +137,7 @@ def load_data() -> pd.DataFrame:
             if col in df0.columns:
                 df0[col] = pd.to_numeric(df0[col], errors="coerce")
         df0 = df0.dropna(subset=["date", "valve_type", "p_max"])
-        return df0
+        return _normalize_df(df0)
 
     # ---- 本地：CSV（回退）----
     df0 = pd.read_csv(DATA_FILE)
@@ -147,17 +149,54 @@ def load_data() -> pd.DataFrame:
         if col in df0.columns:
             df0[col] = pd.to_numeric(df0[col], errors="coerce")
     df0 = df0.dropna(subset=["date", "valve_type", "p_max"])
-    return df0
-    df0["date"] = pd.to_datetime(df0["date"]).dt.date
-    # 兜底：防止字符串/空值
-    for col in ["p_now", "p_max", "level", "temp", "psv_act", "psv_weeping"]:
-        if col in df0.columns:
-            df0[col] = pd.to_numeric(df0[col], errors="coerce")
-    df0 = df0.dropna(subset=["date", "valve_type", "p_max"])
-    return df0
+    return _normalize_df(df0)
 
+
+
+
+def _normalize_df(df0: pd.DataFrame) -> pd.DataFrame:
+    """统一做数据清洗/约束，避免录入或存储导致的图表异常。"""
+    if df0 is None or len(df0) == 0:
+        return df0
+
+    df = df0.copy()
+
+    # 类型兜底
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    for col in ["p_now", "p_max", "level", "temp", "psv_act", "psv_weeping"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # 合理范围（防止误录）
+    if "p_now" in df.columns:
+        df["p_now"] = df["p_now"].clip(lower=0, upper=2)
+    if "p_max" in df.columns:
+        df["p_max"] = df["p_max"].clip(lower=0, upper=2)
+    if "level" in df.columns:
+        df["level"] = df["level"].clip(lower=0, upper=100)
+    if "temp" in df.columns:
+        df["temp"] = df["temp"].clip(lower=-50, upper=80)
+
+    # 物理约束：当日最高压力 >= 当前压力（若违反，按 p_now 修正 p_max）
+    if "p_now" in df.columns and "p_max" in df.columns:
+        m = df["p_max"].notna() & df["p_now"].notna() & (df["p_max"] < df["p_now"])
+        if m.any():
+            df.loc[m, "p_max"] = df.loc[m, "p_now"]
+
+    # 同一阀门同一天重复录入：保留最后一条（避免图表“看起来不对”）
+    if set(["date", "valve_type"]).issubset(df.columns):
+        df = df.sort_values(["valve_type", "date"]).drop_duplicates(
+            subset=["date", "valve_type"], keep="last"
+        )
+
+    df = df.dropna(subset=["date", "valve_type", "p_max"])
+    return df
 def compute_scores(df0: pd.DataFrame, enable_ai: bool, contamination: float) -> pd.DataFrame:
-    if len(df0) == 0:
+    if df0 is None or len(df0) == 0:
+        return df0
+
+    df0 = _normalize_df(df0)
+    if df0 is None or len(df0) == 0:
         return df0
 
     df = df0.copy()
@@ -263,26 +302,34 @@ st.sidebar.header("📝 每日数据录入")
 valve_type = st.sidebar.selectbox("选择安全阀类型", ["泵后安全阀", "储罐主阀", "储罐辅阀"])
 date = st.sidebar.date_input("日期")
 p_now = st.sidebar.number_input("当前压力 p_now (MPa)", 0.0, 2.0, 1.20, 0.01)
-p_max = st.sidebar.number_input("当日最高压力 p_max (MPa)", 0.0, 2.0, 1.25, 0.01)
+p_max = st.sidebar.number_input("当日最高压力 p_max (MPa)", 0.0, 2.0, 1.20, 0.01, help="建议：p_max ≥ p_now；若输入小于 p_now，系统会自动按 p_now 修正。")
 level = st.sidebar.number_input("液位 level (%)", 0, 100, 60)
 temp = st.sidebar.number_input("环境温度 temp (℃)", -30, 60, 25)
 psv_act = st.sidebar.selectbox("是否动作", ["否", "是"])
 psv_weeping = st.sidebar.selectbox("是否微放散/嘶嘶声", ["否", "是"])
 
 if st.sidebar.button("保存并计算", use_container_width=True):
+    # 数据校验：当日最高压力应 >= 当前压力
+    p_now_f = float(p_now)
+    p_max_f = float(p_max)
+    if p_max_f < p_now_f:
+        st.sidebar.warning(f"已自动修正：p_max({p_max_f:.2f}) < p_now({p_now_f:.2f})，将 p_max 设为 {p_now_f:.2f}")
+        p_max_f = p_now_f
+
     # 你原来的录入字段与逻辑保持不变，只替换“保存位置”
     if USE_SUPABASE and supabase is not None:
-        supabase.table("psv_data").insert(
+        supabase.table("psv_data").upsert(
             {
                 "date": str(date),
                 "valve_type": valve_type,
-                "p_now": float(p_now),
-                "p_max": float(p_max),
+                "p_now": p_now_f,
+                "p_max": p_max_f,
                 "level": int(level),
                 "temp": int(temp),
                 "psv_act": 1 if psv_act == "是" else 0,
                 "psv_weeping": 1 if psv_weeping == "是" else 0,
-            }
+            },
+            on_conflict="date,valve_type",
         ).execute()
         st.sidebar.success("✅ 数据已保存到 Supabase（云端）")
         st.rerun()
@@ -291,8 +338,8 @@ if st.sidebar.button("保存并计算", use_container_width=True):
             [{
                 "date": date,
                 "valve_type": valve_type,
-                "p_now": p_now,
-                "p_max": p_max,
+                "p_now": p_now_f,
+                "p_max": p_max_f,
                 "level": level,
                 "temp": temp,
                 "psv_act": 1 if psv_act == "是" else 0,
@@ -301,6 +348,8 @@ if st.sidebar.button("保存并计算", use_container_width=True):
         )
 
         df_to_save = pd.concat([df_raw, new_row], ignore_index=True)
+        # 同一阀门同一天重复录入：保留最后一条
+        df_to_save = df_to_save.sort_values(['valve_type','date']).drop_duplicates(subset=['date','valve_type'], keep='last')
         df_to_save.to_csv(DATA_FILE, index=False, encoding="utf-8-sig")
         st.sidebar.success("✅ 数据已保存（刷新页面可看到更新）")
 
@@ -328,6 +377,16 @@ if len(df_f) == 0:
     st.warning("所选日期范围内没有数据。")
     st.stop()
 
+with st.expander("📥 导出数据（所选日期范围）", expanded=False):
+    csv_bytes = df_f.sort_values(["valve_type", "date"]).to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+    st.download_button(
+        label="下载 CSV",
+        data=csv_bytes,
+        file_name="psv_data_filtered.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
+
 # ============ 总览看板 ============
 st.subheader("📌 总览看板（最新状态）")
 
@@ -351,26 +410,33 @@ st.subheader("📈 单阀趋势（压力 & 健康指数）")
 valve_pick = st.selectbox("选择查看的阀门", sorted(df_f["valve_type"].unique()), index=0)
 
 vdf = df_f[df_f["valve_type"] == valve_pick].sort_values("date").copy()
+vdf["date_dt"] = pd.to_datetime(vdf["date"])
 
 c1, c2 = st.columns(2)
 with c1:
     fig, ax = plt.subplots()
-    ax.plot(vdf["date"], vdf["p_max"], marker="o")
+    ax.plot(vdf["date_dt"], vdf["p_max"], marker="o", label="p_max")
+    if "p_now" in vdf.columns:
+        ax.plot(vdf["date_dt"], vdf["p_now"], marker="o", linestyle="--", label="p_now")
     ax.axhline(SET_P, linestyle="--", label="整定压力 1.32MPa")
     ax.set_title(f"{valve_pick}：当日最高压力趋势")
     ax.set_ylabel("MPa")
-    ax.set_xlabel("date")
+    ax.set_xlabel("日期")
     ax.legend()
+    ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
     plt.xticks(rotation=30)
     st.pyplot(fig)
 
 with c2:
     fig, ax = plt.subplots()
-    ax.plot(vdf["date"], vdf["HI_final"], marker="o")
+    ax.plot(vdf["date_dt"], vdf["HI_final"], marker="o")
     ax.set_title(f"{valve_pick}：健康指数趋势（HI，AI融合）")
     ax.set_ylabel("HI (0-100)")
-    ax.set_xlabel("date")
+    ax.set_xlabel("日期")
     ax.set_ylim(0, 100)
+    ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
     plt.xticks(rotation=30)
     st.pyplot(fig)
 
@@ -378,31 +444,40 @@ st.divider()
 
 # ============ 高级可视化 ============
 st.subheader("🧠 高级可视化")
-tab1, tab2, tab3 = st.tabs(["热力图：健康随时间", "条形图：阀门对比", "散点图：压力 vs 活动"])
+st.caption("建议阅读顺序：①热力图找“哪天哪阀变差” → ②对比图决定“优先处理哪只阀” → ③相关图解释“压力接近整定是否更容易动作/微放散”。")
 
-# ---- 1) 热力图：健康随时间 ----
-with tab1:
-    st.caption("每个格子代表该阀门在当天的健康指数（HI），一眼看出‘哪只阀在哪段时间变差’。")
+g1, g2, g3 = st.columns(3, gap="small")
 
-    # pivot：行=阀门，列=日期，值=HI
+# ---- 1) 热力图：健康随时间（小图）----
+with g1:
+    st.markdown("**① 热力图：健康随时间**")
+    st.caption("颜色越深（偏紫）代表 HI 越低。")
+
     heat = df_f.pivot_table(index="valve_type", columns="date", values="HI_final", aggfunc="mean")
+    fig, ax = plt.subplots(figsize=(4.2, 3.2))
+    im = ax.imshow(heat.values, aspect="auto")
+    ax.set_title("HI 热力图")
 
-    fig, ax = plt.subplots()
-    im = ax.imshow(heat.values, aspect="auto")  # 不指定颜色方案，走默认
-    ax.set_title("阀门健康指数热力图（HI，AI融合）")
     ax.set_yticks(range(len(heat.index)))
     ax.set_yticklabels(list(heat.index))
 
-    ax.set_xticks(range(len(heat.columns)))
-    ax.set_xticklabels([d.strftime("%m-%d") for d in pd.to_datetime(heat.columns)], rotation=45, ha="right")
+    # 日期太多时做抽样，避免小图挤爆
+    cols = list(heat.columns)
+    if len(cols) <= 10:
+        tick_idx = list(range(len(cols)))
+    else:
+        tick_idx = sorted(set(np.linspace(0, len(cols) - 1, 8).round().astype(int).tolist()))
+    ax.set_xticks(tick_idx)
+    ax.set_xticklabels([pd.to_datetime(cols[i]).strftime("%m-%d") for i in tick_idx], rotation=45, ha="right")
 
-    # 色条
-    plt.colorbar(im, ax=ax, label="HI (0-100)")
-    st.pyplot(fig)
+    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="HI")
+    fig.tight_layout()
+    st.pyplot(fig, use_container_width=True)
 
-# ---- 2) 条形图：不同阀门性能对比 ----
-with tab2:
-    st.caption("用近一段时间的平均健康指数/预警次数来做横向对比")
+# ---- 2) 条形图：阀门对比（小图）----
+with g2:
+    st.markdown("**② 对比：平均HI & 预警天数**")
+    st.caption("平均HI越低、红/黄天数越多 → 越优先处理。")
 
     summary = (
         df_f.groupby("valve_type")
@@ -418,39 +493,43 @@ with tab2:
         .sort_values("avg_HI", ascending=False)
     )
 
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=(4.2, 3.2))
     ax.bar(summary["valve_type"], summary["avg_HI"])
-    ax.set_title("阀门对比：平均健康指数（HI）")
+    ax.set_title("平均HI（越高越好）")
     ax.set_ylabel("avg HI")
     ax.set_ylim(0, 100)
-    plt.xticks(rotation=20)
-    st.pyplot(fig)
+    plt.xticks(rotation=20, ha="right")
+    fig.tight_layout()
+    st.pyplot(fig, use_container_width=True)
 
-    st.write("对比汇总（可直接截图进汇报PPT）：")
-    st.dataframe(summary)
+    # 小图下方给一行“结论提示”，领导更容易看懂
+    worst = summary.sort_values("avg_HI").head(1).iloc[0]
+    st.info(f"优先关注：{worst['valve_type']}（平均HI≈{worst['avg_HI']:.1f}，高风险天数={int(worst['red_days'])}，预警天数={int(worst['yellow_days'])}）")
 
-# ---- 3) 散点图：压力 vs 活动相关性 ----
-with tab3:
-    st.caption("验证‘压力越接近整定，阀门动作/微放散越多’是否成立，并用于优化阈值。")
+# ---- 3) 散点图：压力 vs 活动（小图）----
+with g3:
+    st.markdown("**③ 相关：压力 vs 动作/微放散**")
+    st.caption("点越靠上代表动作/微放散越多；用于验证阈值设置是否合理。")
 
     sdf = df_f.copy()
-    # y 轴做轻微抖动，避免点重叠（不影响0/1/2的含义）
     jitter = (np.random.default_rng(0).random(len(sdf)) - 0.5) * 0.06
     y = sdf["Activity"].values + jitter
 
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=(4.2, 3.2))
     ax.scatter(sdf["p_max"], y)
-    ax.set_title("散点：当日最高压力 p_max vs 阀门活动（动作+微放散）")
+    ax.set_title("p_max vs 活动")
     ax.set_xlabel("p_max (MPa)")
-    ax.set_ylabel("Activity (0=无, 1=微放散或动作, 2=动作+微放散)")
-    st.pyplot(fig)
+    ax.set_ylabel("活动(0/1/2)")
+    ax.set_yticks([0, 1, 2])
+    ax.set_ylim(-0.3, 2.3)
+    fig.tight_layout()
+    st.pyplot(fig, use_container_width=True)
 
-    # 相关性（Activity是离散值，用Pearson作为简单展示）
     if sdf["p_max"].nunique() > 1 and sdf["Activity"].nunique() > 1:
         corr = np.corrcoef(sdf["p_max"], sdf["Activity"])[0, 1]
-        st.metric("p_max 与活动(Activity)相关系数（Pearson）", f"{corr:.2f}")
+        st.metric("相关系数", f"{corr:.2f}")
         if "AI_anomaly" in sdf.columns:
-            st.metric("AI 识别异常天数", int(sdf["AI_anomaly"].sum()))
+            st.metric("AI 异常天数", int(sdf["AI_anomaly"].sum()))
     else:
         st.info("数据变化不足，暂无法计算相关性。建议多录入一些天数。")
 
