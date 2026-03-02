@@ -1,4 +1,5 @@
 
+
 import os
 import uuid
 from datetime import timedelta
@@ -415,14 +416,15 @@ def create_or_update_alert(record: dict):
     if len(found) > 0:
         idx = found.index[0]
         keep_status = alerts.loc[idx, "status"] or "待确认"
+        detail_obj = _normalize_trigger_detail(record.get("trigger_detail", alerts.loc[idx, "trigger_detail"]))
         alerts.loc[idx, "risk_level"] = record.get("risk_level", alerts.loc[idx, "risk_level"])
         alerts.loc[idx, "trigger_source"] = record.get("trigger_source", alerts.loc[idx, "trigger_source"])
-        alerts.loc[idx, "trigger_detail"] = _normalize_trigger_detail(
-            record.get("trigger_detail", alerts.loc[idx, "trigger_detail"])
-        )
+        # Store JSON text in dataframe to avoid pandas aligning dict keys as a Series.
+        alerts.at[idx, "trigger_detail"] = json.dumps(detail_obj, ensure_ascii=False)
         alerts.loc[idx, "updated_at"] = now_iso
         alerts.loc[idx, "status"] = keep_status
     else:
+        detail_obj = _normalize_trigger_detail(record.get("trigger_detail", {}))
         new_alert = {
             "id": str(uuid.uuid4()),
             "date": str(pd.to_datetime(record["date"]).date()),
@@ -430,7 +432,7 @@ def create_or_update_alert(record: dict):
             "valve_type": record["valve_type"],
             "risk_level": record.get("risk_level", "🔴 高风险"),
             "trigger_source": record.get("trigger_source", "rule"),
-            "trigger_detail": _normalize_trigger_detail(record.get("trigger_detail", {})),
+            "trigger_detail": json.dumps(detail_obj, ensure_ascii=False),
             "status": "待确认",
             "owner": "",
             "action_taken": "",
