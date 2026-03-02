@@ -3,6 +3,7 @@ import os
 import uuid
 from datetime import timedelta
 from typing import Dict, Tuple
+import json
 
 import numpy as np
 import pandas as pd
@@ -344,6 +345,41 @@ def _save_alerts_local(df: pd.DataFrame):
     df.to_csv(ALERT_FILE, index=False, encoding="utf-8-sig")
 
 
+def _safe_num(v):
+    try:
+        if pd.isna(v):
+            return None
+    except Exception:
+        pass
+    try:
+        return float(v)
+    except Exception:
+        return None
+
+
+def _normalize_trigger_detail(v):
+    if isinstance(v, dict):
+        out = {}
+        for k, x in v.items():
+            if isinstance(x, (int, float, np.number)):
+                out[k] = _safe_num(x)
+            else:
+                out[k] = x
+        return out
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return {}
+        try:
+            obj = json.loads(s)
+            if isinstance(obj, dict):
+                return obj
+            return {"raw": obj}
+        except Exception:
+            return {"raw": s}
+    return {}
+
+
 def append_audit(entity_type: str, entity_id: str, action: str, operator: str, payload: str):
     log = {
         "id": str(uuid.uuid4()),
@@ -381,18 +417,20 @@ def create_or_update_alert(record: dict):
         keep_status = alerts.loc[idx, "status"] or "待确认"
         alerts.loc[idx, "risk_level"] = record.get("risk_level", alerts.loc[idx, "risk_level"])
         alerts.loc[idx, "trigger_source"] = record.get("trigger_source", alerts.loc[idx, "trigger_source"])
-        alerts.loc[idx, "trigger_detail"] = str(record.get("trigger_detail", alerts.loc[idx, "trigger_detail"]))
+        alerts.loc[idx, "trigger_detail"] = _normalize_trigger_detail(
+            record.get("trigger_detail", alerts.loc[idx, "trigger_detail"])
+        )
         alerts.loc[idx, "updated_at"] = now_iso
         alerts.loc[idx, "status"] = keep_status
     else:
         new_alert = {
             "id": str(uuid.uuid4()),
-            "date": str(record["date"]),
+            "date": str(pd.to_datetime(record["date"]).date()),
             "station": record["station"],
             "valve_type": record["valve_type"],
             "risk_level": record.get("risk_level", "🔴 高风险"),
             "trigger_source": record.get("trigger_source", "rule"),
-            "trigger_detail": str(record.get("trigger_detail", "")),
+            "trigger_detail": _normalize_trigger_detail(record.get("trigger_detail", {})),
             "status": "待确认",
             "owner": "",
             "action_taken": "",
@@ -404,8 +442,51 @@ def create_or_update_alert(record: dict):
         alerts = pd.concat([alerts, pd.DataFrame([new_alert])], ignore_index=True)
 
     if USE_SUPABASE and supabase is not None:
-        rows = alerts.to_dict(orient="records")
-        supabase.table(TABLE_ALERT).upsert(rows, on_conflict="id").execute()
+        record_date = str(pd.to_datetime(record["date"]).date())
+        base_payload = {
+            "date": record_date,
+            "station": record["station"],
+            "valve_type": record["valve_type"],
+            "risk_level": record.get("risk_level", "🔴 高风险"),
+            "trigger_source": record.get("trigger_source", "rule"),
+            "trigger_detail": _normalize_trigger_detail(record.get("trigger_detail", {})),
+            "updated_at": now_iso,
+        }
+
+        q = (
+            supabase.table(TABLE_ALERT)
+            .select("id,status,owner,action_taken,verification_result,created_at,closed_at")
+            .eq("date", record_date)
+            .eq("station", record["station"])
+            .eq("valve_type", record["valve_type"])
+            .limit(1)
+            .execute()
+        )
+        ex = (q.data or [])
+        if ex:
+            old = ex[0]
+            payload = {
+                **base_payload,
+                "id": old.get("id"),
+                "status": old.get("status") or "待确认",
+                "owner": old.get("owner") or "",
+                "action_taken": old.get("action_taken") or "",
+                "verification_result": old.get("verification_result") or "",
+                "created_at": old.get("created_at") or now_iso,
+                "closed_at": old.get("closed_at"),
+            }
+        else:
+            payload = {
+                **base_payload,
+                "id": str(uuid.uuid4()),
+                "status": "待确认",
+                "owner": "",
+                "action_taken": "",
+                "verification_result": "",
+                "created_at": now_iso,
+                "closed_at": None,
+            }
+        supabase.table(TABLE_ALERT).upsert(payload, on_conflict="date,station,valve_type").execute()
     else:
         _save_alerts_local(alerts)
 
@@ -443,7 +524,18 @@ def update_alert_status(alert_id: str, new_status: str, operator: str, action_ta
     alerts.loc[idx, "updated_at"] = pd.Timestamp.now().isoformat()
 
     if USE_SUPABASE and supabase is not None:
-        supabase.table(TABLE_ALERT).upsert(alerts.to_dict(orient="records"), on_conflict="id").execute()
+        updates = {
+            "status": new_status,
+            "owner": operator,
+            "updated_at": pd.Timestamp.now().isoformat(),
+        }
+        if action_taken.strip():
+            updates["action_taken"] = action_taken.strip()
+        if verification_result.strip():
+            updates["verification_result"] = verification_result.strip()
+        if new_status == "已关闭":
+            updates["closed_at"] = pd.Timestamp.now().isoformat()
+        supabase.table(TABLE_ALERT).update(updates).eq("id", str(alert_id)).execute()
     else:
         _save_alerts_local(alerts)
 
