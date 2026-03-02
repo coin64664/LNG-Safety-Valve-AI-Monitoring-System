@@ -1,3 +1,4 @@
+
 import os
 import uuid
 from datetime import timedelta
@@ -643,15 +644,142 @@ if len(df) == 0:
     st.info("当前权限范围内还没有数据。")
     st.stop()
 
-# Common date filter
+def build_hi_heatmap(df_filtered: pd.DataFrame) -> pd.DataFrame:
+    if len(df_filtered) == 0:
+        return pd.DataFrame()
+    heat = df_filtered.pivot_table(index="valve_type", columns="date", values="HI_final", aggfunc="mean")
+    return heat.sort_index()
+
+
+def build_hi_compare(df_filtered: pd.DataFrame) -> pd.DataFrame:
+    if len(df_filtered) == 0:
+        return pd.DataFrame()
+    comp = (
+        df_filtered.groupby("valve_type")
+        .agg(
+            avg_HI=("HI_final", "mean"),
+            min_HI=("HI_final", "min"),
+            red_days=("Risk_final", lambda s: (s == "🔴 高风险").sum()),
+            yellow_days=("Risk_final", lambda s: (s == "🟡 预警").sum()),
+        )
+        .reset_index()
+        .sort_values("avg_HI")
+    )
+    return comp
+
+
+def build_leader_storyline(df_filtered: pd.DataFrame, alerts_filtered: pd.DataFrame) -> str:
+    if len(df_filtered) == 0:
+        return "当前范围暂无数据。"
+
+    comp = build_hi_compare(df_filtered)
+    worst_name = "—"
+    worst_hi = np.nan
+    if len(comp) > 0:
+        worst = comp.iloc[0]
+        worst_name = str(worst["valve_type"])
+        worst_hi = float(worst["avg_HI"])
+
+    last_day = df_filtered["date"].max()
+    recent7 = df_filtered[df_filtered["date"] >= (last_day - timedelta(days=6))]["HI_final"].mean()
+    prev7 = df_filtered[
+        (df_filtered["date"] >= (last_day - timedelta(days=13)))
+        & (df_filtered["date"] <= (last_day - timedelta(days=7)))
+    ]["HI_final"].mean()
+    if np.isnan(recent7) or np.isnan(prev7):
+        trend_text = "趋势样本不足"
+    else:
+        delta = recent7 - prev7
+        trend_text = f"近7天较前7天 {'上升' if delta >= 0 else '下降'} {abs(delta):.1f}"
+
+    close_rate = 0.0
+    if len(alerts_filtered) > 0:
+        close_rate = float((alerts_filtered["status"] == "已关闭").mean() * 100)
+
+    return f"重点阀门：{worst_name}（平均HI {worst_hi:.1f}）｜{trend_text}｜告警闭环率 {close_rate:.1f}%"
+
+
+def render_hero_analysis(df_filtered: pd.DataFrame, station_label: str):
+    st.subheader("📈 历史分析主视图")
+    st.caption(f"范围：{station_label} ｜ 指标口径：HI_final / Risk_final / AI_anomaly")
+    c1, c2, c3 = st.columns(3, gap="small")
+
+    with c1:
+        st.markdown("**HI热力图**")
+        heat = build_hi_heatmap(df_filtered)
+        if len(heat) == 0:
+            st.info("暂无可绘制数据")
+        else:
+            fig, ax = plt.subplots(figsize=(4.5, 3.1))
+            im = ax.imshow(heat.values, aspect="auto", cmap="RdYlGn", vmin=0, vmax=100)
+            ax.set_title("HI Heatmap")
+            ax.set_yticks(range(len(heat.index)))
+            ax.set_yticklabels(list(heat.index))
+            cols = list(heat.columns)
+            if len(cols) <= 8:
+                tick_idx = list(range(len(cols)))
+            else:
+                tick_idx = sorted(set(np.linspace(0, len(cols) - 1, 7).round().astype(int).tolist()))
+            ax.set_xticks(tick_idx)
+            ax.set_xticklabels([pd.to_datetime(cols[i]).strftime("%m-%d") for i in tick_idx], rotation=35, ha="right")
+            plt.colorbar(im, ax=ax, fraction=0.045, pad=0.04)
+            fig.tight_layout()
+            st.pyplot(fig, use_container_width=True)
+
+    with c2:
+        st.markdown("**阀门HI对比**")
+        comp = build_hi_compare(df_filtered)
+        if len(comp) == 0:
+            st.info("暂无可绘制数据")
+        else:
+            fig, ax = plt.subplots(figsize=(4.5, 3.1))
+            ax.bar(comp["valve_type"], comp["avg_HI"], color="#2e7d32")
+            ax.set_ylim(0, 100)
+            ax.set_ylabel("avg HI")
+            ax.set_title("Valve HI Compare")
+            plt.xticks(rotation=20, ha="right")
+            fig.tight_layout()
+            st.pyplot(fig, use_container_width=True)
+            st.dataframe(comp[["valve_type", "avg_HI", "red_days", "yellow_days"]], use_container_width=True, height=160)
+
+    with c3:
+        st.markdown("**HI趋势 + AI异常点**")
+        if len(df_filtered) == 0:
+            st.info("暂无可绘制数据")
+        else:
+            daily = (
+                df_filtered.groupby("date")
+                .agg(avg_hi=("HI_final", "mean"), ai_days=("AI_anomaly", "sum"))
+                .reset_index()
+                .sort_values("date")
+            )
+            daily["date_dt"] = pd.to_datetime(daily["date"])
+
+            fig, ax = plt.subplots(figsize=(4.5, 3.1))
+            ax.plot(daily["date_dt"], daily["avg_hi"], marker="o", color="#1565c0", label="平均HI")
+            ai_hit = daily[daily["ai_days"] > 0]
+            if len(ai_hit) > 0:
+                ax.scatter(ai_hit["date_dt"], ai_hit["avg_hi"], color="#d32f2f", label="AI异常日", zorder=3)
+            ax.set_ylim(0, 100)
+            ax.set_title("Trend with AI anomalies")
+            ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+            ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
+            plt.xticks(rotation=30)
+            ax.legend()
+            fig.tight_layout()
+            st.pyplot(fig, use_container_width=True)
+
+
+# Common date filter (default last 30 days)
 min_d, max_d = df["date"].min(), df["date"].max()
+default_start = max(min_d, max_d - timedelta(days=29))
 c1, c2, c3 = st.columns([1, 1, 2])
 with c1:
-    start_date = st.date_input("开始日期", value=min_d, min_value=min_d, max_value=max_d, key="start")
+    start_date = st.date_input("开始日期", value=default_start, min_value=min_d, max_value=max_d, key="start")
 with c2:
     end_date = st.date_input("结束日期", value=max_d, min_value=min_d, max_value=max_d, key="end")
 with c3:
-    st.caption("建议：汇报场景优先选择最近30天。")
+    st.caption("默认窗口：近30天。首屏第一行优先展示历史分析。")
 
 df_f = df[(df["date"] >= start_date) & (df["date"] <= end_date)].copy()
 alerts_f = alerts[
@@ -659,36 +787,63 @@ alerts_f = alerts[
     & (pd.to_datetime(alerts["date"], errors="coerce").dt.date <= end_date)
 ].copy()
 
+if len(df_f) == 0:
+    st.warning("所选日期范围内无数据。")
+    st.stop()
+
+station_options = sorted(df_f["station"].unique())
 if IS_LEADER:
-    tab_dashboard, tab_alert, tab_export, tab_history = st.tabs(["领导驾驶舱", "告警中心", "报表导出", "历史分析"])
+    station_pick = st.selectbox("分析站点", ["全部站点"] + station_options, index=0)
+    if station_pick == "全部站点":
+        hero_df = df_f.copy()
+        hero_alerts = alerts_f.copy()
+        station_label = "全部站点"
+    else:
+        hero_df = df_f[df_f["station"] == station_pick].copy()
+        hero_alerts = alerts_f[alerts_f["station"] == station_pick].copy()
+        station_label = station_pick
 else:
-    tab_dashboard, tab_alert, tab_export, tab_history = st.tabs(["站点工作台", "告警中心", "报表导出", "历史分析"])
+    station_pick = STATION_SCOPE
+    hero_df = df_f[df_f["station"] == station_pick].copy()
+    hero_alerts = alerts_f[alerts_f["station"] == station_pick].copy()
+    station_label = station_pick
+    st.info(f"当前站点：{station_label}")
 
-with tab_dashboard:
+# Row 1: hero analysis
+render_hero_analysis(hero_df, station_label)
+st.info(build_leader_storyline(hero_df, hero_alerts))
+st.divider()
+
+# Row 2: KPI
+st.subheader("📊 管理KPI")
+today = df_f["date"].max()
+week_start = today - timedelta(days=6)
+prev_week_start = today - timedelta(days=13)
+prev_week_end = today - timedelta(days=7)
+
+today_high_risk = int(((hero_df["date"] == today) & (hero_df["Risk_final"] == "🔴 高风险")).sum())
+alerts_week = hero_alerts[pd.to_datetime(hero_alerts["date"], errors="coerce").dt.date >= week_start]
+new_alerts_week = len(alerts_week)
+closed_week = int((alerts_week["status"] == "已关闭").sum()) if len(alerts_week) else 0
+close_rate = (closed_week / new_alerts_week * 100) if new_alerts_week else 0
+
+cur_week_hi = hero_df[(hero_df["date"] >= week_start)]["HI_final"].mean()
+prev_week_hi = hero_df[(hero_df["date"] >= prev_week_start) & (hero_df["date"] <= prev_week_end)]["HI_final"].mean()
+hi_delta = 0 if np.isnan(cur_week_hi) or np.isnan(prev_week_hi) else cur_week_hi - prev_week_hi
+
+k1, k2, k3, k4 = st.columns(4)
+k1.metric("当日高风险阀门数", today_high_risk)
+k2.metric("本周新增告警数", new_alerts_week)
+k3.metric("本周闭环率", f"{close_rate:.1f}%")
+k4.metric("平均HI较上周", f"{hi_delta:+.1f}")
+st.divider()
+
+# Row 3: station compare + alert progress
+st.subheader("🏭 站点对比与告警进度")
+r3c1, r3c2 = st.columns([3, 2], gap="small")
+
+with r3c1:
     if IS_LEADER:
-        st.subheader("📊 领导驾驶舱")
-        today = df_f["date"].max()
-        week_start = today - timedelta(days=6)
-        prev_week_start = today - timedelta(days=13)
-        prev_week_end = today - timedelta(days=7)
-
-        today_high_risk = int(((df_f["date"] == today) & (df_f["Risk_final"] == "🔴 高风险")).sum())
-        alerts_week = alerts_f[pd.to_datetime(alerts_f["date"]).dt.date >= week_start]
-        new_alerts_week = len(alerts_week)
-        closed_week = int((alerts_week["status"] == "已关闭").sum()) if len(alerts_week) else 0
-        close_rate = (closed_week / new_alerts_week * 100) if new_alerts_week else 0
-
-        cur_week_hi = df_f[(df_f["date"] >= week_start)]["HI_final"].mean()
-        prev_week_hi = df_f[(df_f["date"] >= prev_week_start) & (df_f["date"] <= prev_week_end)]["HI_final"].mean()
-        hi_delta = 0 if np.isnan(cur_week_hi) or np.isnan(prev_week_hi) else cur_week_hi - prev_week_hi
-
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("当日高风险阀门数", today_high_risk)
-        k2.metric("本周新增告警数", new_alerts_week)
-        k3.metric("本周闭环率", f"{close_rate:.1f}%")
-        k4.metric("平均HI较上周", f"{hi_delta:+.1f}")
-
-        st.markdown("**华盘 vs 罗所 对比**")
         comp = (
             df_f.groupby("station")
             .agg(
@@ -701,7 +856,6 @@ with tab_dashboard:
             .fillna(0)
             .reset_index()
         )
-
         a2 = alerts_f.copy()
         if len(a2) > 0:
             a2["created_dt"] = pd.to_datetime(a2["created_at"], errors="coerce")
@@ -711,26 +865,71 @@ with tab_dashboard:
             comp["平均闭环时效(h)"] = comp["station"].map(close_eff).fillna(0).round(1)
         else:
             comp["平均闭环时效(h)"] = 0
-
         st.dataframe(comp, use_container_width=True)
-
     else:
-        st.subheader("📌 站点工作台（最新状态）")
-        latest = df_f.sort_values(["valve_type", "date"]).groupby("valve_type").tail(1)
-        cols = st.columns(3)
-        for i, valve in enumerate(["泵后安全阀", "储罐主阀", "储罐辅阀"]):
-            block = latest[latest["valve_type"] == valve]
-            if len(block) == 0:
-                cols[i].metric(f"{valve} HI", "—")
-                cols[i].metric("风险", "—")
-                continue
-            row = block.iloc[0]
-            cols[i].metric(f"{valve} HI", f"{row['HI_final']:.1f}")
-            cols[i].metric("风险", row["Risk_final"])
-            cols[i].caption(f"压力占整定：{row['ratio'] * 100:.1f}%")
+        station_view = build_hi_compare(hero_df)
+        st.dataframe(station_view, use_container_width=True)
 
-with tab_alert:
-    st.subheader("🚨 告警中心")
+with r3c2:
+    if len(hero_alerts) == 0:
+        st.info("当前范围无告警。")
+    else:
+        prog = hero_alerts["status"].value_counts().reindex(STATUS_FLOW, fill_value=0)
+        fig, ax = plt.subplots(figsize=(4.2, 3.1))
+        ax.bar(prog.index, prog.values, color="#0277bd")
+        ax.set_title("告警状态分布")
+        plt.xticks(rotation=20, ha="right")
+        fig.tight_layout()
+        st.pyplot(fig, use_container_width=True)
+st.divider()
+
+# Row 4: reports + detail
+st.subheader("📥 报表与明细")
+exp1, exp2, exp3 = st.columns([1, 1, 2], gap="small")
+with exp1:
+    csv_data = df_f.sort_values(["station", "valve_type", "date"]).to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+    st.download_button(
+        "下载监测数据CSV",
+        data=csv_data,
+        file_name="psv_data_filtered.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
+with exp2:
+    csv_alert = alerts_f.sort_values(["station", "date"]).to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+    st.download_button(
+        "下载告警数据CSV",
+        data=csv_alert,
+        file_name="psv_alerts_filtered.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
+with exp3:
+    avg_hi = hero_df["HI_final"].mean() if len(hero_df) else np.nan
+    red_cnt = int((hero_df["Risk_final"] == "🔴 高风险").sum()) if len(hero_df) else 0
+    yellow_cnt = int((hero_df["Risk_final"] == "🟡 预警").sum()) if len(hero_df) else 0
+    close_rate_text = float((hero_alerts["status"] == "已关闭").mean() * 100) if len(hero_alerts) else 0.0
+
+    summary_lines = [
+        f"报告范围：{start_date} 至 {end_date}",
+        f"账号范围：{station_label}",
+        f"平均HI：{avg_hi:.1f}",
+        f"高风险记录数：{red_cnt}",
+        f"预警记录数：{yellow_cnt}",
+        f"告警闭环率：{close_rate_text:.1f}%",
+        build_leader_storyline(hero_df, hero_alerts),
+    ]
+    summary_text = "\n".join(summary_lines)
+    st.text_area("一键周报摘要（可直接贴PPT）", value=summary_text, height=180)
+    st.download_button(
+        "下载管理摘要TXT",
+        data=summary_text.encode("utf-8"),
+        file_name="management_summary.txt",
+        mime="text/plain",
+        use_container_width=True,
+    )
+
+with st.expander("🚨 告警中心（处理/查看）", expanded=False):
     if len(alerts_f) == 0:
         st.info("当前日期范围无告警。")
     else:
@@ -745,165 +944,58 @@ with tab_alert:
             "owner",
             "action_taken",
             "verification_result",
-            "created_at",
             "updated_at",
             "closed_at",
         ]
         st.dataframe(alerts_f[show_cols], use_container_width=True)
 
     if not IS_LEADER and len(alerts_f) > 0:
-        st.markdown("**处理告警**")
-        work_alerts = alerts_f.copy()
-        selected = st.selectbox(
-            "选择告警ID",
-            work_alerts["id"].astype(str).tolist(),
-            index=0,
-        )
-        row = work_alerts[work_alerts["id"].astype(str) == str(selected)].iloc[0]
+        work_alerts = alerts_f[alerts_f["station"] == station_pick].copy()
+        if len(work_alerts) > 0:
+            selected = st.selectbox("选择告警ID", work_alerts["id"].astype(str).tolist(), index=0)
+            row = work_alerts[work_alerts["id"].astype(str) == str(selected)].iloc[0]
 
-        cur_status = row["status"] if row["status"] in STATUS_FLOW else "待确认"
-        cur_i = STATUS_FLOW.index(cur_status)
-        next_options = STATUS_FLOW[cur_i : min(cur_i + 2, len(STATUS_FLOW))]
+            cur_status = row["status"] if row["status"] in STATUS_FLOW else "待确认"
+            cur_i = STATUS_FLOW.index(cur_status)
+            next_options = STATUS_FLOW[cur_i : min(cur_i + 2, len(STATUS_FLOW))]
+            c1, c2 = st.columns(2)
+            with c1:
+                st.text_input("当前状态", value=cur_status, disabled=True)
+            with c2:
+                new_status = st.selectbox("目标状态", next_options, index=0)
+            action_taken = st.text_area("整改措施（关闭前必填）", value=str(row.get("action_taken", "")))
+            verification_result = st.text_area("复验结果（关闭前必填）", value=str(row.get("verification_result", "")))
 
-        c1, c2 = st.columns(2)
-        with c1:
-            st.text_input("当前状态", value=cur_status, disabled=True)
-        with c2:
-            new_status = st.selectbox("目标状态", next_options, index=0)
-
-        action_taken = st.text_area("整改措施（关闭前必填）", value=str(row.get("action_taken", "")))
-        verification_result = st.text_area("复验结果（关闭前必填）", value=str(row.get("verification_result", "")))
-
-        if st.button("更新告警状态", use_container_width=True):
-            try:
-                update_alert_status(
-                    alert_id=str(selected),
-                    new_status=new_status,
-                    operator=st.session_state.user_name,
-                    action_taken=action_taken,
-                    verification_result=verification_result,
-                )
-                st.success("告警状态已更新")
-                st.rerun()
-            except Exception as ex:
-                st.error(f"更新失败：{ex}")
+            if st.button("更新告警状态", use_container_width=True):
+                try:
+                    update_alert_status(
+                        alert_id=str(selected),
+                        new_status=new_status,
+                        operator=st.session_state.user_name,
+                        action_taken=action_taken,
+                        verification_result=verification_result,
+                    )
+                    st.success("告警状态已更新")
+                    st.rerun()
+                except Exception as ex:
+                    st.error(f"更新失败：{ex}")
     elif IS_LEADER:
         st.info("领导账号为只读，不可修改告警状态。")
 
-with tab_export:
-    st.subheader("📥 报表导出")
-
-    csv_data = df_f.sort_values(["station", "valve_type", "date"]).to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-    st.download_button(
-        "下载监测数据CSV",
-        data=csv_data,
-        file_name="psv_data_filtered.csv",
-        mime="text/csv",
-        use_container_width=True,
-    )
-
-    csv_alert = alerts_f.sort_values(["station", "date"]).to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-    st.download_button(
-        "下载告警数据CSV",
-        data=csv_alert,
-        file_name="psv_alerts_filtered.csv",
-        mime="text/csv",
-        use_container_width=True,
-    )
-
-    avg_hi = df_f["HI_final"].mean()
-    red_cnt = int((df_f["Risk_final"] == "🔴 高风险").sum())
-    yellow_cnt = int((df_f["Risk_final"] == "🟡 预警").sum())
-    close_rate = 0.0
-    if len(alerts_f) > 0:
-        close_rate = (alerts_f["status"] == "已关闭").mean() * 100
-
-    summary_lines = [
-        f"报告范围：{start_date} 至 {end_date}",
-        f"账号范围：{STATION_SCOPE}",
-        f"平均HI：{avg_hi:.1f}",
-        f"高风险记录数：{red_cnt}",
-        f"预警记录数：{yellow_cnt}",
-        f"告警闭环率：{close_rate:.1f}%",
-    ]
-
-    if IS_LEADER:
-        comp = (
-            df_f.groupby("station")["HI_final"]
-            .mean()
-            .reindex(STATIONS)
-            .fillna(0)
-        )
-        summary_lines.append(f"站点对比：华盘平均HI={comp.get(STATIONS[0], 0):.1f}，罗所平均HI={comp.get(STATIONS[1], 0):.1f}")
-
-    summary_text = "\n".join(summary_lines)
-    st.text_area("管理摘要（可直接贴PPT）", value=summary_text, height=180)
-    st.download_button(
-        "下载管理摘要TXT",
-        data=summary_text.encode("utf-8"),
-        file_name="management_summary.txt",
-        mime="text/plain",
-        use_container_width=True,
-    )
-
-with tab_history:
-    st.subheader("📈 历史分析")
-
-    station_opts = sorted(df_f["station"].unique())
-    if IS_LEADER:
-        station_pick = st.selectbox("站点", station_opts, index=0)
-    else:
-        station_pick = STATION_SCOPE
-        st.info(f"当前站点：{station_pick}")
-
-    sdf = df_f[df_f["station"] == station_pick].copy()
-    if len(sdf) == 0:
-        st.warning("该站点当前筛选范围内无数据。")
-        st.stop()
-
-    valve_pick = st.selectbox("阀门", sorted(sdf["valve_type"].unique()), index=0)
-    vdf = sdf[sdf["valve_type"] == valve_pick].sort_values("date").copy()
-    vdf["date_dt"] = pd.to_datetime(vdf["date"])
-
-    c1, c2 = st.columns(2)
-    with c1:
-        fig, ax = plt.subplots()
-        ax.plot(vdf["date_dt"], vdf["p_max"], marker="o", label="p_max")
-        ax.plot(vdf["date_dt"], vdf["p_now"], marker="o", linestyle="--", label="p_now")
-        ax.axhline(SET_P, linestyle="--", label="整定压力 1.32MPa")
-        ax.set_title(f"{station_pick} - {valve_pick} 压力趋势")
-        ax.set_ylabel("MPa")
-        ax.legend()
-        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
-        plt.xticks(rotation=30)
-        st.pyplot(fig)
-
-    with c2:
-        fig, ax = plt.subplots()
-        ax.plot(vdf["date_dt"], vdf["HI_final"], marker="o")
-        ax.set_title(f"{station_pick} - {valve_pick} 健康指数趋势")
-        ax.set_ylabel("HI")
-        ax.set_ylim(0, 100)
-        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
-        plt.xticks(rotation=30)
-        st.pyplot(fig)
-
-    st.markdown("**最近20条记录**")
-    show_cols = [
-        "date",
-        "station",
-        "valve_type",
-        "p_now",
-        "p_max",
-        "level",
-        "temp",
-        "psv_act",
-        "psv_weeping",
-        "HI_final",
-        "Risk_final",
-        "AI_anomaly",
-        "AI_score",
-    ]
-    st.dataframe(sdf.sort_values("date", ascending=False)[show_cols].head(20), use_container_width=True)
+st.markdown("**最近20条记录**")
+show_cols = [
+    "date",
+    "station",
+    "valve_type",
+    "p_now",
+    "p_max",
+    "level",
+    "temp",
+    "psv_act",
+    "psv_weeping",
+    "HI_final",
+    "Risk_final",
+    "AI_anomaly",
+    "AI_score",
+]
+st.dataframe(hero_df.sort_values("date", ascending=False)[show_cols].head(20), use_container_width=True)
