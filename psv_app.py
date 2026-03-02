@@ -1019,6 +1019,30 @@ def render_tab_history(df_filtered: pd.DataFrame, alerts_filtered: pd.DataFrame)
             fig.tight_layout()
             st.pyplot(fig, use_container_width=True)
 
+            pmax_start = float(vdf["p_max"].iloc[0])
+            pmax_end = float(vdf["p_max"].iloc[-1])
+            pmax_delta = pmax_end - pmax_start
+            near_set_days = int((vdf["p_max"] >= SET_P * 0.95).sum())
+            exceed_set_days = int((vdf["p_max"] >= SET_P).sum())
+            ai_days = int(vdf["ai_observe_flag"].sum()) if "ai_observe_flag" in vdf.columns else 0
+            if pmax_delta > 0.02:
+                trend_word = "明显上升"
+            elif pmax_delta < -0.02:
+                trend_word = "下降"
+            else:
+                trend_word = "总体平稳"
+
+            st.caption(
+                "趋势解读："
+                f"p_max 从 {pmax_start:.2f}MPa 变化到 {pmax_end:.2f}MPa（{trend_word}，变化 {pmax_delta:+.2f}MPa）。"
+                f"近整定压力(≥{SET_P*0.95:.2f}MPa)共 {near_set_days} 天，超过整定线共 {exceed_set_days} 天，"
+                f"AI观察异常 {ai_days} 天。"
+            )
+            if exceed_set_days > 0:
+                st.warning("建议：出现超过整定线的日期应优先复盘工况与阀门动作记录。")
+            elif near_set_days > 0:
+                st.info("建议：压力已多次接近整定线，建议提前做维护巡检，避免突发动作。")
+
     with c2:
         st.markdown("**HI热力图**")
         heat = build_hi_heatmap(hist_df)
@@ -1042,6 +1066,27 @@ def render_tab_history(df_filtered: pd.DataFrame, alerts_filtered: pd.DataFrame)
             plt.colorbar(im, ax=ax, fraction=0.045, pad=0.04)
             fig.tight_layout()
             st.pyplot(fig, use_container_width=True)
+
+            flat = heat.stack(dropna=True)
+            if len(flat) > 0:
+                worst_idx = flat.idxmin()
+                worst_hi = float(flat.min())
+                worst_valve = str(worst_idx[0])
+                worst_date = pd.to_datetime(worst_idx[1]).strftime("%Y-%m-%d")
+            else:
+                worst_hi = np.nan
+                worst_valve = "-"
+                worst_date = "-"
+
+            yellow_cnt = int((hist_df["Risk_final"] == "🟡 预警").sum())
+            red_cnt = int((hist_df["Risk_final"] == "🔴 高风险").sum())
+            st.caption(
+                "热力图解读：颜色越偏红代表HI越低、风险越高；越偏绿代表运行更稳定。"
+                f"本周期最低HI为 {worst_hi:.1f}（{worst_date}，{worst_valve}），"
+                f"累计预警 {yellow_cnt} 条，高风险 {red_cnt} 条。"
+            )
+            if red_cnt > 0:
+                st.warning("建议：优先处理热力图中“连续偏黄/偏红”的阀门与日期段。")
 
     with c3:
         st.markdown("**阀门HI对比**")
