@@ -189,8 +189,21 @@ def inject_ui_theme(palette: dict, enabled: bool = True):
       background: linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 48%, #ffffff 100%);
     }}
 
+    header[data-testid="stHeader"] {{
+      display: none !important;
+      height: 0 !important;
+    }}
+
+    [data-testid="stToolbar"] {{
+      display: none !important;
+    }}
+
+    [data-testid="stDecoration"] {{
+      display: none !important;
+    }}
+
     .block-container {{
-      padding-top: 1.2rem;
+      padding-top: .6rem;
       padding-bottom: 1.8rem;
     }}
 
@@ -301,15 +314,16 @@ def render_brand_header(logo_path: str, palette: dict, enabled: bool = True):
 
     left, right = st.columns([1, 9], gap="small")
     with left:
+        st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
         if Path(logo_path).exists():
             logo_img = _load_logo_for_display(logo_path)
             if logo_img is not None:
-                st.image(logo_img, width=110)
+                st.image(logo_img, width=96)
             else:
-                st.image(logo_path, width=110)
+                st.image(logo_path, width=96)
         else:
             st.markdown(
-                "<div style='height:86px;display:flex;align-items:center;justify-content:center;"
+                "<div style='height:82px;display:flex;align-items:center;justify-content:center;"
                 "border:1px dashed rgba(11,94,215,.35);border-radius:12px;color:#1b4f8c;font-size:.85rem;'>公司Logo</div>",
                 unsafe_allow_html=True,
             )
@@ -436,7 +450,8 @@ if not st.session_state.authenticated:
             st.rerun()
         else:
             st.sidebar.error("密码错误")
-    st.warning("请输入账号和密码后进入系统。")
+    render_brand_header(COMPANY_LOGO_PATH, BRAND, enabled=ENABLE_UI_THEME)
+    st.info("请输入账号和密码后进入系统。")
     st.stop()
 else:
     st.sidebar.success(
