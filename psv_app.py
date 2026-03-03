@@ -1,4 +1,5 @@
 
+
 import os
 import uuid
 from datetime import timedelta
@@ -308,7 +309,7 @@ def inject_ui_theme(palette: dict, enabled: bool = True):
 
 def render_brand_header(logo_path: str, palette: dict, enabled: bool = True):
     if not enabled:
-        st.title("基于Isolation Forest算法的LNG储罐安全阀健康监测与风险AI预警系统")
+        st.title("Isolation Forest算法：LNG储罐安全阀健康监测与风险AI预警系统")
         st.caption("双站点分角色管理｜滚动60天Isolation Forest｜双条件AI升级预警")
         return
 
@@ -330,9 +331,9 @@ def render_brand_header(logo_path: str, palette: dict, enabled: bool = True):
     with right:
         st.markdown(
             "<div class='brand-header'>"
-            "<h1 class='brand-title'>基于Isolation Forest算法的LNG储罐安全阀健康监测与风险AI预警系统</h1>"
+            "<h1 class='brand-title'>Isolation Forest算法：LNG储罐安全阀健康监测与风险AI预警系统</h1>"
             "<div class='brand-subtitle'>双站点分角色管理｜滚动60天Isolation Forest｜双条件AI升级预警</div>"
-            "<div class='brand-chip'>企业安全创新项目</div>"
+            "<div class='brand-chip'>玉溪销售企业安全创新项目</div>"
             "</div>",
             unsafe_allow_html=True,
         )
@@ -452,6 +453,30 @@ if not st.session_state.authenticated:
             st.sidebar.error("密码错误")
     render_brand_header(COMPANY_LOGO_PATH, BRAND, enabled=ENABLE_UI_THEME)
     st.info("请输入账号和密码后进入系统。")
+    st.markdown(
+        """
+        <div style="
+            margin-top: 10px;
+            max-width: 820px;
+            border: 1px solid rgba(11,94,215,.18);
+            border-radius: 14px;
+            background: linear-gradient(120deg, #ffffff 0%, #f3f8ff 100%);
+            padding: 14px 16px;
+            box-shadow: 0 8px 20px rgba(17,65,133,.08);
+            color: #1f3b64;
+        ">
+            <div style="font-size: 1.04rem; font-weight: 800; margin-bottom: 6px;">版本信息：v0.3</div>
+            <div style="font-size: .95rem; line-height: 1.62;">
+                更新内容：<br/>
+                1. UI视觉升级（品牌头部、主题配色、Tab胶囊样式）；<br/>
+                2. 历史分析解读增强（趋势图与热力图自动说明）；<br/>
+                3. AI预警中心完善（滚动60天、双条件升级、异常原因Top特征）。
+            </div>
+            <div style="margin-top: 8px; font-size: .92rem; font-weight: 700;">开发：杨翔允</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     st.stop()
 else:
     st.sidebar.success(
