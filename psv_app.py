@@ -1,5 +1,4 @@
 
-
 import os
 import uuid
 from datetime import timedelta
@@ -468,9 +467,9 @@ if not st.session_state.authenticated:
             <div style="font-size: 1.04rem; font-weight: 800; margin-bottom: 6px;">版本信息：v0.3</div>
             <div style="font-size: .95rem; line-height: 1.62;">
                 更新内容：<br/>
-                1. UI视觉升级（品牌头部、主题配色、Tab胶囊样式）；<br/>
-                2. 历史分析解读增强（趋势图与热力图自动说明）；<br/>
-                3. AI预警中心完善（滚动60天、双条件升级、异常原因Top特征）。
+                1. 预警中心完善（滚动60天、双条件升级、异常原因Top特征），新增预警中心、驾驶舱、告警闭环功能；<br/>
+                2. 历史分析解读增强（趋势图与热力图自动说明），算法预测逻辑优化。注意，登陆后需等待10秒服务器加载；<br/>
+                3.新增账号配置，单站单号，目前华盘站已导入30天模拟数据，可具体观测项目效果与功能 华盘站测试密码：hp123456。
             </div>
             <div style="margin-top: 8px; font-size: .92rem; font-weight: 700;">开发：杨翔允</div>
         </div>
