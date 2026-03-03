@@ -1,16 +1,17 @@
 
-
 import os
 import uuid
 from datetime import timedelta
 from typing import Dict, Tuple
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import matplotlib.image as mpimg
 
 import matplotlib as mpl
 from matplotlib import font_manager
@@ -41,6 +42,10 @@ AI_FEATURE_LABELS = {
     "Activity": "动作/微放散",
 }
 
+DEFAULT_BRAND_PRIMARY = "#0B5ED7"
+DEFAULT_BRAND_ACCENT = "#E65100"
+LOGO_FILE = "company_logo.png"
+
 
 # ================== Supabase init ==================
 try:
@@ -56,6 +61,240 @@ def _secret_get(key: str, default=""):
         return st.secrets.get(key, default)
     except Exception:
         return default
+
+
+def _hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
+    c = hex_color.strip().lstrip("#")
+    if len(c) != 6:
+        return 11, 94, 215
+    return int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+
+
+def _rgb_to_hex(rgb: Tuple[int, int, int]) -> str:
+    r, g, b = [int(max(0, min(255, v))) for v in rgb]
+    return f"#{r:02X}{g:02X}{b:02X}"
+
+
+def _mix_hex(base_hex: str, target_hex: str, ratio: float) -> str:
+    br, bg, bb = _hex_to_rgb(base_hex)
+    tr, tg, tb = _hex_to_rgb(target_hex)
+    r = br * (1 - ratio) + tr * ratio
+    g = bg * (1 - ratio) + tg * ratio
+    b = bb * (1 - ratio) + tb * ratio
+    return _rgb_to_hex((r, g, b))
+
+
+def load_logo_and_palette(logo_path: str = LOGO_FILE) -> dict:
+    palette = {
+        "primary": DEFAULT_BRAND_PRIMARY,
+        "secondary": _mix_hex(DEFAULT_BRAND_PRIMARY, "#FFFFFF", 0.78),
+        "primary_dark": _mix_hex(DEFAULT_BRAND_PRIMARY, "#000000", 0.22),
+        "accent": DEFAULT_BRAND_ACCENT,
+        "bg_top": "#EEF5FF",
+        "bg_bottom": "#F8FBFF",
+        "logo_path": logo_path,
+        "logo_exists": Path(logo_path).exists(),
+    }
+    if not palette["logo_exists"]:
+        return palette
+
+    try:
+        img = mpimg.imread(logo_path)
+        if img.ndim < 3:
+            return palette
+        arr = np.array(img)
+        if arr.dtype != np.uint8:
+            arr = np.clip(arr * 255, 0, 255).astype(np.uint8)
+        if arr.shape[2] == 4:
+            alpha = arr[:, :, 3] > 25
+            arr = arr[:, :, :3]
+            arr = arr[alpha]
+        else:
+            arr = arr[:, :, :3].reshape(-1, 3)
+
+        if arr.ndim != 2 or len(arr) == 0:
+            return palette
+
+        if len(arr) > 12000:
+            pick = np.linspace(0, len(arr) - 1, 12000).astype(int)
+            arr = arr[pick]
+
+        quant = (arr // 16) * 16
+        uniq, cnt = np.unique(quant, axis=0, return_counts=True)
+        dom = uniq[cnt.argmax()]
+        primary = _rgb_to_hex((int(dom[0]), int(dom[1]), int(dom[2])))
+        palette["primary"] = primary
+        palette["secondary"] = _mix_hex(primary, "#FFFFFF", 0.80)
+        palette["primary_dark"] = _mix_hex(primary, "#000000", 0.18)
+        palette["bg_top"] = _mix_hex(primary, "#FFFFFF", 0.90)
+        palette["bg_bottom"] = _mix_hex(primary, "#FFFFFF", 0.97)
+    except Exception:
+        return palette
+
+    return palette
+
+
+def inject_ui_theme(palette: dict, enabled: bool = True):
+    if not enabled:
+        return
+
+    css = f"""
+    <style>
+    :root {{
+      --brand-primary: {palette['primary']};
+      --brand-secondary: {palette['secondary']};
+      --brand-dark: {palette['primary_dark']};
+      --brand-accent: {palette['accent']};
+      --bg-top: {palette['bg_top']};
+      --bg-bottom: {palette['bg_bottom']};
+    }}
+
+    .stApp {{
+      background: linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 48%, #ffffff 100%);
+    }}
+
+    .block-container {{
+      padding-top: 1.2rem;
+      padding-bottom: 1.8rem;
+    }}
+
+    section[data-testid="stSidebar"] {{
+      background: linear-gradient(180deg, #F2F7FF 0%, #FFFFFF 100%);
+      border-right: 1px solid rgba(11, 94, 215, 0.10);
+    }}
+
+    div[data-testid="stMetric"] {{
+      border: 1px solid rgba(11, 94, 215, 0.14);
+      border-radius: 12px;
+      padding: 10px 14px;
+      background: #FFFFFF;
+      box-shadow: 0 8px 24px rgba(17, 65, 133, 0.08);
+    }}
+
+    div[data-baseweb="tab-list"] {{
+      gap: 10px;
+    }}
+
+    div[data-baseweb="tab-list"] button {{
+      border: 1px solid rgba(11, 94, 215, 0.18) !important;
+      border-radius: 999px !important;
+      background: #ffffff !important;
+      color: #1c2b42 !important;
+      padding: 8px 16px !important;
+      font-weight: 600 !important;
+    }}
+
+    div[data-baseweb="tab-list"] button[aria-selected="true"] {{
+      background: linear-gradient(90deg, var(--brand-primary), var(--brand-dark)) !important;
+      color: #ffffff !important;
+      border-color: transparent !important;
+      box-shadow: 0 6px 16px rgba(11, 94, 215, 0.28);
+    }}
+
+    button[kind="primary"], .stButton > button {{
+      border-radius: 10px !important;
+      border: 1px solid rgba(11, 94, 215, 0.25) !important;
+    }}
+
+    .stButton > button[data-testid="baseButton-primary"] {{
+      background: linear-gradient(120deg, var(--brand-primary), var(--brand-dark)) !important;
+      color: #ffffff !important;
+    }}
+
+    div[data-testid="stDataFrame"] {{
+      border: 1px solid rgba(11, 94, 215, 0.16);
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 6px 18px rgba(17, 65, 133, 0.06);
+    }}
+
+    div[data-testid="stAlert"] {{
+      border-radius: 12px;
+      border: 1px solid rgba(11, 94, 215, 0.14);
+      box-shadow: 0 4px 14px rgba(17, 65, 133, 0.06);
+    }}
+
+    .brand-header {{
+      border: 1px solid rgba(11, 94, 215, 0.16);
+      border-radius: 16px;
+      background: linear-gradient(120deg, #FFFFFF 0%, var(--brand-secondary) 100%);
+      padding: 12px 16px;
+      margin-bottom: 12px;
+      box-shadow: 0 10px 26px rgba(17, 65, 133, 0.10);
+    }}
+
+    .brand-title {{
+      margin: 0;
+      font-size: 2rem;
+      line-height: 1.18;
+      font-weight: 800;
+      letter-spacing: .2px;
+      background: linear-gradient(90deg, var(--brand-dark), var(--brand-primary));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }}
+
+    .brand-subtitle {{
+      margin-top: .35rem;
+      color: #3A567A;
+      font-size: 1rem;
+      font-weight: 500;
+    }}
+
+    .brand-chip {{
+      display: inline-block;
+      margin-top: .45rem;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(11, 94, 215, 0.11);
+      color: #17427A;
+      font-size: .82rem;
+      font-weight: 700;
+    }}
+    </style>
+    """
+    st.markdown(css, unsafe_allow_html=True)
+
+
+def render_brand_header(logo_path: str, palette: dict, enabled: bool = True):
+    if not enabled:
+        st.title("基于Isolation Forest算法的LNG储罐安全阀健康监测与风险AI预警系统")
+        st.caption("双站点分角色管理｜滚动60天Isolation Forest｜双条件AI升级预警")
+        return
+
+    left, right = st.columns([1, 7], gap="small")
+    with left:
+        if Path(logo_path).exists():
+            st.image(logo_path, width=92)
+        else:
+            st.markdown(
+                "<div style='height:92px;display:flex;align-items:center;justify-content:center;"
+                "border:1px dashed rgba(11,94,215,.35);border-radius:12px;color:#1b4f8c;font-size:.85rem;'>公司Logo</div>",
+                unsafe_allow_html=True,
+            )
+    with right:
+        st.markdown(
+            "<div class='brand-header'>"
+            "<h1 class='brand-title'>基于Isolation Forest算法的LNG储罐安全阀健康监测与风险AI预警系统</h1>"
+            "<div class='brand-subtitle'>双站点分角色管理｜滚动60天Isolation Forest｜双条件AI升级预警</div>"
+            "<div class='brand-chip'>企业安全创新项目</div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+
+def apply_plot_theme(palette: dict, enabled: bool = True):
+    if not enabled:
+        return
+    mpl.rcParams["axes.facecolor"] = "#FFFFFF"
+    mpl.rcParams["figure.facecolor"] = "#FFFFFF"
+    mpl.rcParams["axes.edgecolor"] = "#7f93b3"
+    mpl.rcParams["axes.grid"] = True
+    mpl.rcParams["grid.alpha"] = 0.20
+    mpl.rcParams["grid.linestyle"] = "--"
+    mpl.rcParams["grid.color"] = _mix_hex(palette["primary"], "#000000", 0.30)
+    mpl.rcParams["axes.titleweight"] = "bold"
+    mpl.rcParams["axes.titlecolor"] = "#1a3457"
 
 
 SUPABASE_URL = _secret_get("SUPABASE_URL", "") or os.getenv("SUPABASE_URL", "")
@@ -110,6 +349,12 @@ def _setup_cjk_font():
 
 _setup_cjk_font()
 st.set_page_config(page_title="Isolation Forest LNG安全阀AI预警系统", layout="wide")
+
+ENABLE_UI_THEME = str(_secret_get("ENABLE_UI_THEME", "1") or os.getenv("ENABLE_UI_THEME", "1")).strip().lower() not in {"0", "false", "no", "off"}
+COMPANY_LOGO_PATH = str(_secret_get("COMPANY_LOGO_PATH", LOGO_FILE) or os.getenv("COMPANY_LOGO_PATH", LOGO_FILE))
+BRAND = load_logo_and_palette(COMPANY_LOGO_PATH)
+inject_ui_theme(BRAND, enabled=ENABLE_UI_THEME)
+apply_plot_theme(BRAND, enabled=ENABLE_UI_THEME)
 
 
 # ================== Auth ==================
@@ -785,8 +1030,7 @@ def sync_alerts_from_scores(df_scored: pd.DataFrame):
         )
 
 # ================== UI ==================
-st.title("基于Isolation Forest算法的LNG储罐安全阀健康监测与风险AI预警系统")
-st.caption("双站点分角色管理｜滚动60天Isolation Forest｜双条件AI升级预警")
+render_brand_header(COMPANY_LOGO_PATH, BRAND, enabled=ENABLE_UI_THEME)
 
 st.sidebar.divider()
 st.sidebar.header("🧠 AI 参数")
