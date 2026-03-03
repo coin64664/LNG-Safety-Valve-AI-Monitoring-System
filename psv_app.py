@@ -134,6 +134,42 @@ def load_logo_and_palette(logo_path: str = LOGO_FILE) -> dict:
     return palette
 
 
+def _load_logo_for_display(logo_path: str):
+    if not Path(logo_path).exists():
+        return None
+    try:
+        img = mpimg.imread(logo_path)
+        if img.ndim < 3:
+            return img
+        arr = np.array(img)
+        if arr.dtype != np.uint8:
+            arr = np.clip(arr * 255, 0, 255).astype(np.uint8)
+
+        rgb = arr[:, :, :3]
+        if arr.shape[2] == 4:
+            mask = arr[:, :, 3] > 12
+        else:
+            mask = np.any(rgb < 245, axis=2)
+
+        if not mask.any():
+            return img
+
+        ys, xs = np.where(mask)
+        y0, y1 = ys.min(), ys.max() + 1
+        x0, x1 = xs.min(), xs.max() + 1
+        pad = max(2, int(0.03 * max(y1 - y0, x1 - x0)))
+        y0 = max(0, y0 - pad)
+        x0 = max(0, x0 - pad)
+        y1 = min(arr.shape[0], y1 + pad)
+        x1 = min(arr.shape[1], x1 + pad)
+        cropped = arr[y0:y1, x0:x1]
+        if cropped.dtype == np.uint8:
+            return cropped.astype(np.float32) / 255.0
+        return cropped
+    except Exception:
+        return None
+
+
 def inject_ui_theme(palette: dict, enabled: bool = True):
     if not enabled:
         return
@@ -218,26 +254,27 @@ def inject_ui_theme(palette: dict, enabled: bool = True):
       border: 1px solid rgba(11, 94, 215, 0.16);
       border-radius: 16px;
       background: linear-gradient(120deg, #FFFFFF 0%, var(--brand-secondary) 100%);
-      padding: 12px 16px;
-      margin-bottom: 12px;
+      padding: 10px 14px;
+      margin-bottom: 10px;
       box-shadow: 0 10px 26px rgba(17, 65, 133, 0.10);
     }}
 
     .brand-title {{
       margin: 0;
-      font-size: 2rem;
-      line-height: 1.18;
+      font-size: clamp(1.35rem, 2.2vw, 2.25rem);
+      line-height: 1.22;
       font-weight: 800;
       letter-spacing: .2px;
+      word-break: break-word;
       background: linear-gradient(90deg, var(--brand-dark), var(--brand-primary));
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
     }}
 
     .brand-subtitle {{
-      margin-top: .35rem;
+      margin-top: .30rem;
       color: #3A567A;
-      font-size: 1rem;
+      font-size: .98rem;
       font-weight: 500;
     }}
 
@@ -262,13 +299,17 @@ def render_brand_header(logo_path: str, palette: dict, enabled: bool = True):
         st.caption("双站点分角色管理｜滚动60天Isolation Forest｜双条件AI升级预警")
         return
 
-    left, right = st.columns([1, 7], gap="small")
+    left, right = st.columns([1, 9], gap="small")
     with left:
         if Path(logo_path).exists():
-            st.image(logo_path, width=92)
+            logo_img = _load_logo_for_display(logo_path)
+            if logo_img is not None:
+                st.image(logo_img, width=110)
+            else:
+                st.image(logo_path, width=110)
         else:
             st.markdown(
-                "<div style='height:92px;display:flex;align-items:center;justify-content:center;"
+                "<div style='height:86px;display:flex;align-items:center;justify-content:center;"
                 "border:1px dashed rgba(11,94,215,.35);border-radius:12px;color:#1b4f8c;font-size:.85rem;'>公司Logo</div>",
                 unsafe_allow_html=True,
             )
