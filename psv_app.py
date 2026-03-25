@@ -450,10 +450,17 @@ def apply_plot_theme(palette: dict, enabled: bool = True):
 SUPABASE_URL = _secret_get("SUPABASE_URL", "") or os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = _secret_get("SUPABASE_KEY", "") or os.getenv("SUPABASE_KEY", "")
 
+@st.cache_resource(show_spinner=False)
+def _get_supabase_client(url: str, key: str):
+    if not SUPABASE_OK or not url or not key:
+        return None
+    return create_client(url, key)
+
+
 USE_SUPABASE = True
 supabase = None
 if USE_SUPABASE and SUPABASE_OK and SUPABASE_URL and SUPABASE_KEY:
-    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    supabase = _get_supabase_client(SUPABASE_URL, SUPABASE_KEY)
 elif USE_SUPABASE:
     st.sidebar.warning("⚠️ 未检测到 Supabase 配置（SUPABASE_URL / SUPABASE_KEY），将回退为本地CSV存储。")
     USE_SUPABASE = False
@@ -849,7 +856,7 @@ def compute_scores(df0: pd.DataFrame, enable_ai: bool, contamination: float) -> 
     return run_scoring_pipeline(_normalize_df(df0), enable_ai=enable_ai, contamination=contamination)
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner="正在更新运行分析...")
 def _load_scored_data_cached(
     station_scope: str,
     role: str,
@@ -865,6 +872,16 @@ def _load_scored_data_cached(
 @st.cache_data(show_spinner=False)
 def _load_alerts_cached(station_scope: str, role: str, reload_token: int) -> pd.DataFrame:
     return list_alerts(station_scope=station_scope, role=role).copy()
+
+
+@st.cache_data(show_spinner=False)
+def _build_validation_summary_cached(df_filtered: pd.DataFrame, alerts_filtered: pd.DataFrame) -> dict:
+    return build_validation_summary(df_filtered, alerts_filtered)
+
+
+@st.cache_data(show_spinner=False)
+def _build_quality_table_cached(df_filtered: pd.DataFrame) -> pd.DataFrame:
+    return build_data_quality_table(df_filtered)
 
 
 def _build_alert_sync_key(df_scored: pd.DataFrame, enable_ai: bool, contamination: float) -> str:
@@ -1019,14 +1036,13 @@ else:
 
 
 # Load + score + auto alerts
-with st.spinner("正在更新运行分析..."):
-    df_raw, df = _load_scored_data_cached(
-        station_scope=STATION_SCOPE,
-        role=ROLE,
-        enable_ai=enable_ai,
-        contamination=contamination,
-        reload_token=st.session_state.data_reload_token,
-    )
+df_raw, df = _load_scored_data_cached(
+    station_scope=STATION_SCOPE,
+    role=ROLE,
+    enable_ai=enable_ai,
+    contamination=contamination,
+    reload_token=st.session_state.data_reload_token,
+)
 
 sync_key = _build_alert_sync_key(df, enable_ai=enable_ai, contamination=contamination)
 if st.session_state.last_alert_sync_key != sync_key:
@@ -1074,6 +1090,7 @@ def _slice_by_station(df_input: pd.DataFrame, station_pick: str) -> pd.DataFrame
     return df_input[df_input["station"] == station_pick].copy()
 
 
+@st.cache_data(show_spinner=False)
 def build_hi_heatmap(df_filtered: pd.DataFrame) -> pd.DataFrame:
     if len(df_filtered) == 0:
         return pd.DataFrame()
@@ -1081,6 +1098,7 @@ def build_hi_heatmap(df_filtered: pd.DataFrame) -> pd.DataFrame:
     return heat.sort_index()
 
 
+@st.cache_data(show_spinner=False)
 def build_hi_compare(df_filtered: pd.DataFrame) -> pd.DataFrame:
     if len(df_filtered) == 0:
         return pd.DataFrame()
@@ -1097,6 +1115,7 @@ def build_hi_compare(df_filtered: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+@st.cache_data(show_spinner=False)
 def build_pressure_trend(df_filtered: pd.DataFrame, station: str, valve: str) -> pd.DataFrame:
     sdf = _slice_by_station(df_filtered, station)
     if len(sdf) == 0:
@@ -1120,6 +1139,7 @@ def build_pressure_trend(df_filtered: pd.DataFrame, station: str, valve: str) ->
     return vdf
 
 
+@st.cache_data(show_spinner=False)
 def build_leader_storyline(df_filtered: pd.DataFrame, alerts_filtered: pd.DataFrame) -> str:
     if len(df_filtered) == 0:
         return "当前时间范围暂无运行数据。"
@@ -1158,6 +1178,7 @@ def build_leader_storyline(df_filtered: pd.DataFrame, alerts_filtered: pd.DataFr
     )
 
 
+@st.cache_data(show_spinner=False)
 def build_valve_health_profile(df_filtered: pd.DataFrame, alerts_filtered: pd.DataFrame, valve_pick: str) -> dict:
     valve_df = df_filtered[df_filtered["valve_type"] == valve_pick].copy().sort_values("date")
     valve_alerts = alerts_filtered[alerts_filtered["valve_type"] == valve_pick].copy() if len(alerts_filtered) > 0 else pd.DataFrame()
@@ -1392,7 +1413,7 @@ def render_tab_ai(df_filtered: pd.DataFrame):
         case_df = case_df[case_df["station"] == case_station].copy()
     case_replay = build_case_replay(ai_df if station_pick != "全部站点" else case_df, case_station, valve_pick)
     vote_matrix = build_model_vote_matrix(ai_df if station_pick != "全部站点" else case_df, case_station, valve_pick)
-    local_summary = build_validation_summary(ai_df, pd.DataFrame())
+    local_summary = _build_validation_summary_cached(ai_df, pd.DataFrame())
     focus_row = case_df.sort_values(["consensus_score", "date"], ascending=[False, False]).iloc[0]
 
     m1, m2, m3, m4 = st.columns(4)
@@ -1514,7 +1535,7 @@ def render_tab_ai(df_filtered: pd.DataFrame):
         st.dataframe(detail_view, use_container_width=True, height=280)
 
     with right:
-        quality_view = build_data_quality_table(ai_df)
+        quality_view = _build_quality_table_cached(ai_df)
         quality_view = quality_view.rename(
             columns={
                 "station": "站点",
@@ -1824,7 +1845,7 @@ def render_tab_reports(df_filtered: pd.DataFrame, alerts_filtered: pd.DataFrame)
             use_container_width=True,
         )
     with d2:
-        quality_csv = build_data_quality_table(rep_df).to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+        quality_csv = _build_quality_table_cached(rep_df).to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
         st.download_button(
             "下载数据质量清单CSV",
             data=quality_csv,
@@ -1876,36 +1897,50 @@ NAV_ITEMS = ["历史分析", "AI预警中心", "驾驶舱", "告警闭环", "报
 if st.session_state.active_view not in NAV_ITEMS:
     st.session_state.active_view = NAV_ITEMS[0]
 
-if hasattr(st, "segmented_control"):
-    active_view = st.segmented_control(
-        "页面模块",
-        NAV_ITEMS,
-        default=st.session_state.active_view,
-        selection_mode="single",
-        key="active_view_picker",
-        label_visibility="collapsed",
-    )
-    if not active_view:
-        active_view = st.session_state.active_view
-else:
-    active_view = st.radio(
-        "页面模块",
-        NAV_ITEMS,
-        index=NAV_ITEMS.index(st.session_state.active_view),
-        horizontal=True,
-        key="active_view_picker",
-        label_visibility="collapsed",
-    )
+def _render_active_module():
+    if hasattr(st, "segmented_control"):
+        active_view = st.segmented_control(
+            "页面模块",
+            NAV_ITEMS,
+            default=st.session_state.active_view,
+            selection_mode="single",
+            key="active_view_picker",
+            label_visibility="collapsed",
+        )
+        if not active_view:
+            active_view = st.session_state.active_view
+    else:
+        active_view = st.radio(
+            "页面模块",
+            NAV_ITEMS,
+            index=NAV_ITEMS.index(st.session_state.active_view),
+            horizontal=True,
+            key="active_view_picker",
+            label_visibility="collapsed",
+        )
 
-st.session_state.active_view = active_view
+    st.session_state.active_view = active_view
 
-if active_view == "历史分析":
-    render_tab_history(df_f, alerts_f)
-elif active_view == "AI预警中心":
-    render_tab_ai(df_f)
-elif active_view == "驾驶舱":
-    render_tab_dashboard(df_f, alerts_f, ROLE)
-elif active_view == "告警闭环":
-    render_tab_alerts(alerts_f)
+    content_shell = st.container()
+    with content_shell:
+        if active_view == "历史分析":
+            render_tab_history(df_f, alerts_f)
+        elif active_view == "AI预警中心":
+            render_tab_ai(df_f)
+        elif active_view == "驾驶舱":
+            render_tab_dashboard(df_f, alerts_f, ROLE)
+        elif active_view == "告警闭环":
+            render_tab_alerts(alerts_f)
+        else:
+            render_tab_reports(df_f, alerts_f)
+
+
+if hasattr(st, "fragment"):
+    @st.fragment
+    def _render_active_module_fragment():
+        _render_active_module()
+
+
+    _render_active_module_fragment()
 else:
-    render_tab_reports(df_f, alerts_f)
+    _render_active_module()
